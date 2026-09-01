@@ -75,9 +75,20 @@ def save_profile_to_db(candidate_id, profile):
 def add_candidate_skill(candidate_id, skill):
     "Add a skill to a candidate's source-of-truth record."
     record = CANDIDATES.get(candidate_id)
+
     if record is None:
         return {"updated": False, "found": False}
+
     skills = list(record["skills"])
+
     if skill not in skills:
         skills.append(skill)
-    return {"updated": True, "found": True, "skills": skills}
+
+    # Persist the updated skills back to the source-of-truth record.
+    record["skills"] = skills
+
+    return {
+        "updated": True,
+        "found": True,
+        "skills": skills,
+    }
