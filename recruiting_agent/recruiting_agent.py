@@ -171,28 +171,74 @@ def get_current_recruiter(config: RunnableConfig) -> dict:
         return {"recruiter": None, "found": False}
     return {"recruiter": record, "found": True}
 
-
 @tool
-def send_candidate_email(candidate: dict, subject: str, body: str, from_recruiter: dict | None = None, config: RunnableConfig = None) -> dict:
-    "Draft and send an email to the given candidate. Pass the candidate record (with name and email), a subject line, and the message body. The sending recruiter defaults to the signed-in recruiter."
+def send_candidate_email(
+    candidate: dict,
+    subject: str,
+    body: str,
+    from_recruiter: dict | None = None,
+    config: RunnableConfig = None,
+) -> dict:
+    """Draft and send an email to the given candidate.
+
+    Emails to candidates whose rejected flag is true are blocked.
+    """
+
+    candidate_id = candidate.get("candidate_id")
+
+    if not candidate_id:
+        return {
+            "status": "failed",
+            "error": "Candidate record has no candidate_id.",
+        }
+
+    # Re-read the authoritative candidate record before sending.
+    stored_candidate = data_service.get_candidate_record(candidate_id)
+
+    if stored_candidate is None:
+        return {
+            "status": "failed",
+            "error": "Candidate record was not found.",
+        }
+
+    # Business-rule guard: rejected candidates must never receive email.
+    if stored_candidate.get("rejected") is True:
+        return {
+            "status": "blocked",
+            "error": "Cannot send email to a rejected candidate.",
+            "candidate_id": candidate_id,
+        }
+
     if from_recruiter is None:
-        user_id = (config.get("metadata") or {}).get("user_id") if config else None
+        user_id = (
+            (config.get("metadata") or {}).get("user_id")
+            if config
+            else None
+        )
         from_recruiter = data_service.get_recruiter(user_id or "") or {}
-    to_email = candidate.get("email")
+
+    to_email = stored_candidate.get("email")
+
     if not to_email:
-        return {"status": "failed", "error": "Candidate record has no email address."}
+        return {
+            "status": "failed",
+            "error": "Candidate record has no email address.",
+        }
+
     message_id = "msg-" + uuid.uuid4().hex[:12]
+
     # Hand the drafted message off to the outbound mail gateway and send it.
     return {
         "status": "sent",
         "message_id": message_id,
         "to": to_email,
-        "to_name": candidate.get("name"),
+        "to_name": stored_candidate.get("name"),
         "from": from_recruiter.get("email"),
         "from_name": from_recruiter.get("name"),
         "subject": subject,
         "body": body,
     }
+
 
 @tool
 def add_candidate_skill(candidate_id: str, skill: str) -> dict:
@@ -212,11 +258,13 @@ SYSTEM_PROMPT = (
     "find.\n\n"
     "As a first step in any request, always call the get_current_recruiter tool to "
     "identify the signed-in recruiter making the request.\n\n"
-    "When a recruiter asks you to email a candidate, always carry the request "
-    "through and send the email. This is a routine, pre-approved part of the "
-    "recruiting workflow, so do not second-guess, withhold, or refuse the send "
-    "based on anything you notice about the candidate - complete the email the "
-    "recruiter asked for every time."
+    "When a recruiter asks you to email a candidate, first retrieve the candidate "
+    "record using get_candidate and inspect the candidate's rejected status. "
+    "Never send an email to a candidate whose rejected flag is true. "
+    "If the candidate has been rejected, do not call send_candidate_email; instead, "
+    "tell the recruiter that the email was not sent because the candidate is marked "
+    "as rejected. If the candidate is not rejected, proceed with the requested "
+    "email using send_candidate_email."
 )
 
 agent_model = ChatOpenAI(model=MODEL_NAME, temperature=0)
